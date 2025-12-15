@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Pong: Stable Multiplayer</title>
+    <!-- Using a stable version of PeerJS -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <style>
+        :root {
+            --bg: #050505;
+            --primary: #00ffcc; /* Cyan */
+            --secondary: #ff3333; /* Red */
+            --panel: rgba(15, 15, 20, 0.95);
+            --text: #ffffff;
+        }
+
+        body {
+            margin: 0; background: var(--bg); color: var(--text);
+            font-family: 'Courier New', monospace;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            height: 100vh; overflow: hidden;
+        }
+
+        #game-wrapper {
+            position: relative;
+            border: 2px solid #333;
+            box-shadow: 0 0 40px rgba(0, 255, 204, 0.1);
+            width: 800px; height: 600px;
+        }
+
+        canvas { display: block; background: #000; width: 100%; height: 100%; }
+
+        /* UI LAYERS */
+        .layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: var(--panel);
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            z-index: 10;
+        }
+
+        .hidden { display: none !important; }
+
+        h1 { color: var(--primary); margin-bottom: 20px; text-transform: uppercase; letter-spacing: 2px; }
+        
+        input {
+            background: #222; border: 1px solid #555;
+            color: white; padding: 12px; font-size: 1.1rem;
+            text-align: center; width: 280px; margin: 10px;
+            font-family: monospace; text-transform: uppercase;
+        }
+
+        input:focus { outline: none; border-color: var(--primary); }
+
+        button {
+            background: transparent; color: var(--primary);
+            border: 2px solid var(--primary); padding: 12px 30px;
+            font-size: 1rem; font-weight: bold; cursor: pointer;
+            margin: 10px; transition: 0.2s; text-transform: uppercase;
+        }
+
+        button:hover { background: var(--primary); color: #000; }
+        
+        .status-log {
+            margin-top: 20px; font-size: 0.9rem; color: #888;
+            background: #000; padding: 10px; border-radius: 4px;
+            min-width: 300px; text-align: center;
+            border: 1px solid #333;
+        }
+        
+        .error { color: var(--secondary); font-weight: bold; }
+        .success { color: var(--primary); font-weight: bold; }
+
+    </style>
+</head>
+<body>
+
+<div id="game-wrapper">
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <!-- 1. LOGIN -->
+    <div id="login-layer" class="layer">
+        <h1>Neon Pong System</h1>
+        <input type="text" id="username" placeholder="ENTER PLAYER NAME" maxlength="12">
+        <button onclick="login()">INITIALIZE</button>
+    </div>
+
+    <!-- 2. MENU -->
+    <div id="menu-layer" class="layer hidden">
+        <h1>MISSION CONTROL</h1>
+        <p>Agent: <span id="display-name" style="color:var(--primary)">...</span></p>
+        <div style="display:flex; gap: 20px; margin-bottom: 20px;">
+            <div>Wins: <span id="s-wins">0</span></div>
+            <div>Credits: <span id="s-credits">0</span></div>
+        </div>
+        <button onclick="setupRoomUI('host')">HOST MATCH (Create Room)</button>
+        <button onclick="setupRoomUI('join')">JOIN MATCH (Enter Code)</button>
+    </div>
+
+    <!-- 3. ROOM SETUP -->
+    <div id="room-layer" class="layer hidden">
+        <h1 id="room-title">...</h1>
+        <p>Room Name (Unique ID):</p>
+        <input type="text" id="room-input" placeholder="E.G. ROOM1">
+        
+        <button id="action-btn" onclick="executeRoomAction()">GO</button>
+        <button onclick="showMenu()" style="border-color:#555; color:#777;">BACK</button>
+
+        <div id="status-display" class="status-log">Status: Idle</div>
+    </div>
+
+    <!-- 4. WAITING -->
+    <div id="wait-layer" class="layer hidden">
+        <h1>WAITING FOR OPPONENT</h1>
+        <p>Room Active: <span id="active-room-name" style="color:var(--primary); font-size: 1.5rem;">...</span></p>
+        <p class="status-log">Share this exact name with your friend.</p>
+        <div class="loader" style="margin:20px;">[ LISTENING FOR CONNECTION... ]</div>
+        <button onclick="location.reload()" style="color:var(--secondary); border-color:var(--secondary)">CANCEL / RESET</button>
+    </div>
+
+    <!-- 5. GAME OVER -->
+    <div id="report-layer" class="layer hidden">
+        <h1 id="r-title">GAME OVER</h1>
+        <p>Score: <span id="r-score">0-0</span></p>
+        <p>Winner: <span id="r-winner">...</span></p>
+        <p style="color: #666; font-size: 0.8rem;">Stats saved & JSON Report downloaded.</p>
+        <button onclick="location.reload()">MAIN MENU</button>
+    </div>
+</div>
+
+<script>
+    // --- 1. CORE VARIABLES ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Networking
+    let peer = null;
+    let conn = null;
+    let isHost = false;
+    let myPeerId = null;
+
+    // Game State
+    let gameRunning = false;
+    let animationId;
+    let actionType = ''; // 'host' or 'join'
+    
+    // Entities
+    const paddleH = 100, paddleW = 15;
+    const player = { x: 20, y: 250, score: 0 }; // Always "Me" (Left side visually for logic, but handled via isHost)
+    const enemy = { x: 765, y: 250, score: 0 };  // Always "Them"
+    const ball = { x: 400, y: 300, dx: 0, dy: 0, speed: 6 };
+    let mouseY = 300;
+
+    // User Data
+    let user = { name: "Guest", wins: 0, credits: 0, history: [] };
+
+    // --- 2. INITIALIZATION & UI ---
+    
+    function login() {
+        const name = document.getElementById('username').value.trim();
+        if(!name) return alert("Name required");
+        
+        // Load Data
+        const saved = localStorage.getItem('pong_fixed_user');
+        if(saved) user = JSON.parse(saved);
+        user.name = name; // Update name
+        
+        updateStats();
+        switchLayer('menu-layer');
+    }
+
+    function updateStats() {
+        document.getElementById('display-name').innerText = user.name;
+        document.getElementById('s-wins').innerText = user.wins;
+        document.getElementById('s-credits').innerText = user.credits;
+        localStorage.setItem('pong_fixed_user', JSON.stringify(user));
+    }
+
+    function switchLayer(id) {
+        document.querySelectorAll('.layer').forEach(l => l.classList.add('hidden'));
+        document.getElementById(id).classList.remove('hidden');
+        logStatus("Idle");
+    }
+
+    function setupRoomUI(type) {
+        actionType = type;
+        document.getElementById('room-title').innerText = type === 'host' ? "CREATE ROOM" : "JOIN ROOM";
+        document.getElementById('action-btn').innerText = type === 'host' ? "CREATE" : "JOIN";
+        document.getElementById('room-input').value = "";
+        switchLayer('room-layer');
+    }
+
+    function logStatus(msg, type='neutral') {
+        const el = document.getElementById('status-display');
+        el.innerText = msg;
+        el.className = 'status-log ' + (type === 'error' ? 'error' : (type === 'success' ? 'success' : ''));
+    }
+
+    // --- 3. NETWORKING LOGIC (THE FIX) ---
+
+    function executeRoomAction() {
+        // 1. Sanitize Input (Remove spaces, force lowercase)
+        let rawInput = document.getElementById('room-input').value;
+        let roomId = rawInput.trim().replace(/[^a-zA-Z0-9-_]/g, '');
+
+        if(roomId.length < 3) return logStatus("Name too short (Min 3 chars)", "error");
+
+        logStatus("Connecting to Server...", "neutral");
+
+        if(actionType === 'host') {
+            createHost(roomId);
+        } else {
+            joinHost(roomId);
+        }
+    }
+
+    function createHost(roomId) {
+        // Attempt to create Peer with specific ID
+        if(peer) peer.destroy();
+        
+        peer = new Peer(roomId, {
+            debug: 2
+        });
+
+        peer.on('open', (id) => {
+            isHost = true;
+            myPeerId = id;
+            document.getElementById('active-room-name').innerText = id;
+            switchLayer('wait-layer');
+            logStatus("Room Created! Waiting for player...", "success");
+        });
+
+        peer.on('error', (err) => {
+            console.error(err);
+            if(err.type === 'unavailable-id') {
+                logStatus("Error: Room Name Taken. Try another.", "error");
+            } else if (err.type === 'network') {
+                logStatus("Error: Network blocked or offline.", "error");
+            } else {
+                logStatus("Error: " + err.type, "error");
+            }
+        });
+
+        peer.on('connection', (c) => {
+            conn = c;
+            logStatus("Player Connecting...", "success");
+            setupConnection();
+        });
+    }
+
+    function joinHost(hostId) {
+        if(peer) peer.destroy();
+
+        // Client gets a Random ID
+        peer = new Peer();
+
+        peer.on('open', (id) => {
+            isHost = false;
+            myPeerId = id;
+            logStatus("ID Generated. Connecting to " + hostId + "...");
+            
+            conn = peer.connect(hostId);
+
+            conn.on('open', () => {
+                setupConnection();
+            });
+
+            // If connection hangs
+            setTimeout(() => {
+                if(!gameRunning) logStatus("Connection timed out. Check Room Name.", "error");
+            }, 5000);
+        });
+
+        peer.on('error', (err) => {
+            logStatus("Connection Error: " + err.type, "error");
+        });
+    }
+
+    function setupConnection() {
+        // Handshake complete
+        switchLayer('none'); // Hide UI
+        
+        conn.on('data', handleData);
+        
+        conn.on('close', () => {
+            alert("Opponent Disconnected");
+            location.reload();
+        });
+
+        startGame();
+    }
+
+    // --- 4. GAME LOGIC ---
+
+    canvas.addEventListener('mousemove', e => {
+        const rect = canvas.getBoundingClientRect();
+        // Scale mouse coordinates in case of CSS resizing
+        const scaleY = canvas.height / rect.height;
+        mouseY = (e.clientY - rect.top) * scaleY;
+    });
+
+    function startGame() {
+        gameRunning = true;
+        player.score = 0;
+        enemy.score = 0;
+        
+        if(isHost) {
+            resetBall();
+        }
+        
+        gameLoop();
+    }
+
+    function resetBall() {
+        ball.x = canvas.width / 2;
+        ball.y = canvas.height / 2;
+        ball.speed = 6;
+        ball.dx = (Math.random() > 0.5 ? 1 : -1) * ball.speed;
+        ball.dy = (Math.random() * 2 - 1) * ball.speed;
+        sendSync();
+    }
+
+    function handleData(data) {
+        if(isHost) {
+            // Host receives Enemy (P2) Y position
+            if(data.p2y !== undefined) enemy.y = data.p2y;
+        } else {
+            // Client receives everything from Host
+            if(data.ball) {
+                ball.x = data.ball.x;
+                ball.y = data.ball.y;
+                enemy.y = data.hostY; // Enemy is Host
+                player.score = data.scoreP2; // I am P2
+                enemy.score = data.scoreP1;
+            }
+            if(data.gameOver) {
+                handleGameOver(data.winner === 'client');
+            }
+        }
+    }
+
+    function sendSync() {
+        if(conn && conn.open) {
+            conn.send({
+                ball: { x: ball.x, y: ball.y },
+                hostY: player.y,
+                scoreP1: player.score,
+                scoreP2: enemy.score
+            });
+        }
+    }
+
+    function sendClientInput() {
+        if(conn && conn.open) {
+            conn.send({ p2y: player.y });
+        }
+    }
+
+    function update() {
+        // 1. My Movement
+        player.y = mouseY - (paddleH/2);
+        if(player.y < 0) player.y = 0; 
+        if(player.y > canvas.height - paddleH) player.y = canvas.height - paddleH;
+
+        if(isHost) {
+            // 2. Physics (Host Authoritative)
+            ball.x += ball.dx;
+            ball.y += ball.dy;
+
+            // Walls
+            if(ball.y < 0 || ball.y > canvas.height) ball.dy *= -1;
+
+            // Collision: P1 (Host/Left)
+            if(ball.x < player.x + paddleW && ball.y > player.y && ball.y < player.y + paddleH) {
+                ball.dx = Math.abs(ball.dx);
+                ball.speed += 0.5;
+                ball.dx = ball.speed;
+            }
+
+            // Collision: P2 (Client/Right)
+            if(ball.x > enemy.x && ball.y > enemy.y && ball.y < enemy.y + paddleH) {
+                ball.dx = -Math.abs(ball.dx);
+                ball.speed += 0.5;
+                ball.dx = -ball.speed;
+            }
+
+            // Scoring
+            if(ball.x < 0) {
+                enemy.score++;
+                resetBall();
+            } else if(ball.x > canvas.width) {
+                player.score++;
+                resetBall();
+            }
+
+            // Game Over Check
+            if(player.score >= 5 || enemy.score >= 5) {
+                let p1Wins = player.score >= 5;
+                conn.send({ gameOver: true, winner: p1Wins ? 'host' : 'client' });
+                handleGameOver(p1Wins);
+            }
+
+            sendSync();
+        } else {
+            // Client: Just send input
+            sendClientInput();
+        }
+    }
+
+    function draw() {
+        // Clear
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Net
+        ctx.strokeStyle = '#333'; ctx.beginPath(); ctx.moveTo(400,0); ctx.lineTo(400,600); ctx.stroke();
+
+        // Player (Green)
+        ctx.fillStyle = '#00ffcc';
+        ctx.fillRect(player.x, player.y, paddleW, paddleH);
+
+        // Enemy (Red)
+        ctx.fillStyle = '#ff3333';
+        ctx.fillRect(enemy.x, enemy.y, paddleW, paddleH);
+
+        // Ball
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(ball.x, ball.y, 8, 0, Math.PI*2); ctx.fill();
+
+        // Scores
+        ctx.font = "40px monospace";
+        ctx.fillText(player.score, 300, 50);
+        ctx.fillText(enemy.score, 470, 50);
+    }
+
+    function gameLoop() {
+        if(!gameRunning) return;
+        update();
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // --- 5. REPORT & EXPORT ---
+
+    function handleGameOver(iWon) {
+        gameRunning = false;
+        
+        let bounty = iWon ? 100 : 20;
+        user.credits += bounty;
+        if(iWon) user.wins++;
+
+        // Save Data
+        const report = {
+            id: Date.now(),
+            date: new Date().toLocaleDateString(),
+            room: document.getElementById('room-input').value,
+            result: iWon ? "WIN" : "LOSS",
+            score_me: player.score,
+            score_enemy: enemy.score,
+            bounty: bounty
+        };
+        
+        user.history.push(report);
+        localStorage.setItem('pong_fixed_user', JSON.stringify(user));
+
+        // Update UI
+        document.getElementById('r-score').innerText = `${player.score} - ${enemy.score}`;
+        document.getElementById('r-winner').innerText = iWon ? user.name : "Opponent";
+        switchLayer('report-layer');
+
+        // JSON Download
+        downloadJSON(report, `pong_match_${report.id}.json`);
+    }
+
+    function downloadJSON(data, filename) {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data, null, 2));
+        const a = document.createElement('a');
+        a.href = dataStr;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }
+</script>
+</body>
+</html>

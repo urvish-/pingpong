@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Pong: Career Mode</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --primary: #00ffcc; /* Neon Cyan */
+            --secondary: #ff00ff; /* Neon Pink */
+            --ui-bg: rgba(22, 27, 34, 0.95);
+            --text-color: #c9d1d9;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #game-wrapper {
+            position: relative;
+            box-shadow: 0 0 30px rgba(0, 255, 204, 0.2);
+            border: 2px solid #333;
+        }
+
+        canvas {
+            display: block;
+            background: radial-gradient(circle at center, #1a202c 0%, #0d1117 100%);
+        }
+
+        /* UI Overlays */
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: var(--ui-bg);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            text-align: center;
+            transition: opacity 0.3s;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        h1 { font-size: 3rem; margin-bottom: 10px; text-transform: uppercase; color: var(--primary); text-shadow: 0 0 10px var(--primary); }
+        h2 { color: var(--secondary); margin-bottom: 20px; }
+        
+        input {
+            padding: 10px;
+            font-size: 1.2rem;
+            background: #000;
+            border: 1px solid var(--primary);
+            color: #fff;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        button {
+            padding: 12px 24px;
+            font-size: 1rem;
+            background: transparent;
+            color: var(--primary);
+            border: 2px solid var(--primary);
+            cursor: pointer;
+            text-transform: uppercase;
+            font-weight: bold;
+            transition: all 0.2s;
+            margin: 5px;
+        }
+
+        button:hover {
+            background: var(--primary);
+            color: #000;
+            box-shadow: 0 0 15px var(--primary);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            text-align: left;
+            margin-bottom: 20px;
+            background: rgba(0,0,0,0.5);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+
+        .level-badge {
+            background: var(--secondary);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        #hud {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            font-size: 40px;
+            font-weight: bold;
+            pointer-events: none;
+            gap: 50px;
+            text-shadow: 0 0 10px rgba(255,255,255,0.5);
+        }
+
+        #level-indicator {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: #555;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-wrapper">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        
+        <!-- HUD -->
+        <div id="hud" class="hidden">
+            <span id="playerScore">0</span>
+            <span id="aiScore">0</span>
+        </div>
+        <div id="level-indicator"></div>
+
+        <!-- Login Screen -->
+        <div id="login-screen" class="overlay">
+            <h1>Neon Pong</h1>
+            <p>Enter your Agent Name</p>
+            <input type="text" id="username" placeholder="Player One" maxlength="12">
+            <button onclick="login()">Enter System</button>
+        </div>
+
+        <!-- Dashboard / Main Menu -->
+        <div id="dashboard-screen" class="overlay hidden">
+            <h1 id="welcome-msg">Welcome</h1>
+            <div class="stats-grid">
+                <div>Total Wins: <span id="stat-wins">0</span></div>
+                <div>Total Losses: <span id="stat-losses">0</span></div>
+                <div>Win Rate: <span id="stat-rate">0%</span></div>
+                <div>Highest Streak: <span id="stat-streak">0</span></div>
+            </div>
+            
+            <h2 id="current-stage-title">Stage 1: The Training</h2>
+            <p id="stage-desc" style="max-width: 400px; margin-bottom: 20px; color: #888;">Basic speed. Standard paddles.</p>
+
+            <button onclick="startGame()">Start Match</button>
+            <button onclick="exportProfile()" style="border-color: var(--secondary); color: var(--secondary);">Export Profile (JSON)</button>
+            <button onclick="logout()" style="font-size: 0.8rem; margin-top: 20px; border: none; color: #666;">Logout / Reset</button>
+        </div>
+
+        <!-- Game Over / Level Complete -->
+        <div id="result-screen" class="overlay hidden">
+            <h1 id="result-title">Victory</h1>
+            <p id="result-msg">Score recorded.</p>
+            <button onclick="returnToDashboard()">Continue</button>
+        </div>
+    </div>
+
+    <script>
+        // --- GAME CONFIGURATION & LEVELS ---
+        const LEVELS = [
+            { id: 1, name: "The Training", ballSpeed: 6, aiSpeed: 4, aiError: 0.3, paddleSize: 100, winScore: 3 },
+            { id: 2, name: "Hyper Drive", ballSpeed: 9, aiSpeed: 6, aiError: 0.2, paddleSize: 100, winScore: 5 },
+            { id: 3, name: "Precision", ballSpeed: 8, aiSpeed: 7, aiError: 0.1, paddleSize: 70, winScore: 5 }, // Smaller paddle
+            { id: 4, name: "The Wall", ballSpeed: 10, aiSpeed: 9, aiError: 0.05, paddleSize: 100, winScore: 7 }, // AI almost perfect
+            { id: 5, name: "God Mode", ballSpeed: 14, aiSpeed: 12, aiError: 0.0, paddleSize: 60, winScore: 10 }
+        ];
+
+        // --- GLOBAL VARIABLES ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        let gameState = 'LOGIN'; // LOGIN, DASHBOARD, PLAYING, RESULT
+        let animationId;
+        
+        // Profile Data Structure
+        let userProfile = {
+            name: "Guest",
+            currentLevelIndex: 0,
+            wins: 0,
+            losses: 0,
+            streak: 0,
+            bestStreak: 0,
+            matchHistory: [] // { date, level, pScore, aiScore, result }
+        };
+
+        // Game Entities
+        const ball = { x: 400, y: 300, dx: 5, dy: 5, radius: 8, speed: 5 };
+        const player = { x: 20, y: 250, width: 15, height: 100, score: 0 };
+        const ai = { x: 765, y: 250, width: 15, height: 100, score: 0 };
+        
+        // Input
+        let mouseY = 300;
+
+        // --- PROFILE SYSTEM ---
+
+        function loadProfile() {
+            const saved = localStorage.getItem('pong_profile');
+            if (saved) {
+                userProfile = JSON.parse(saved);
+                showDashboard();
+            } else {
+                document.getElementById('login-screen').classList.remove('hidden');
+            }
+        }
+
+        function saveProfile() {
+            localStorage.setItem('pong_profile', JSON.stringify(userProfile));
+        }
+
+        function login() {
+            const input = document.getElementById('username');
+            if(input.value.trim() === "") return alert("Please enter a name");
+            
+            userProfile.name = input.value.trim();
+            saveProfile();
+            showDashboard();
+            document.getElementById('login-screen').classList.add('hidden');
+        }
+
+        function logout() {
+            if(confirm("This will clear your local save. Are you sure?")) {
+                localStorage.removeItem('pong_profile');
+                location.reload();
+            }
+        }
+
+        function exportProfile() {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(userProfile, null, 2));
+            const downloadAnchorNode = document.createElement('a');
+            downloadAnchorNode.setAttribute("href", dataStr);
+            downloadAnchorNode.setAttribute("download", userProfile.name + "_pong_record.json");
+            document.body.appendChild(downloadAnchorNode);
+            downloadAnchorNode.click();
+            downloadAnchorNode.remove();
+        }
+
+        // --- UI MANAGEMENT ---
+
+        function showDashboard() {
+            gameState = 'DASHBOARD';
+            document.getElementById('welcome-msg').innerText = `Welcome, ${userProfile.name}`;
+            document.getElementById('stat-wins').innerText = userProfile.wins;
+            document.getElementById('stat-losses').innerText = userProfile.losses;
+            document.getElementById('stat-streak').innerText = userProfile.bestStreak;
+            
+            const total = userProfile.wins + userProfile.losses;
+            const rate = total === 0 ? 0 : Math.round((userProfile.wins / total) * 100);
+            document.getElementById('stat-rate').innerText = rate + "%";
+
+            // Level Info
+            const currentLvl = LEVELS[userProfile.currentLevelIndex] || LEVELS[LEVELS.length -1];
+            
+            // Check if game is beaten
+            if(userProfile.currentLevelIndex >= LEVELS.length) {
+                document.getElementById('current-stage-title').innerText = "CAMPAIGN COMPLETED";
+                document.getElementById('stage-desc').innerText = "You are the Pong Master. You can keep playing Level 5 for fun.";
+            } else {
+                document.getElementById('current-stage-title').innerText = `Stage ${currentLvl.id}: ${currentLvl.name}`;
+                document.getElementById('stage-desc').innerText = `Target: ${currentLvl.winScore} pts | Paddle: ${currentLvl.paddleSize}px | Speed: ${currentLvl.ballSpeed}`;
+            }
+
+            document.getElementById('dashboard-screen').classList.remove('hidden');
+            document.getElementById('result-screen').classList.add('hidden');
+            document.getElementById('hud').classList.add('hidden');
+        }
+
+        function returnToDashboard() {
+            showDashboard();
+        }
+
+        // --- GAME LOGIC ---
+
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouseY = e.clientY - rect.top;
+        });
+
+        function startGame() {
+            document.getElementById('dashboard-screen').classList.add('hidden');
+            document.getElementById('hud').classList.remove('hidden');
+            
+            // Configure Level
+            let lvlIdx = userProfile.currentLevelIndex;
+            if(lvlIdx >= LEVELS.length) lvlIdx = LEVELS.length - 1; // Cap at max level
+            const config = LEVELS[lvlIdx];
+
+            // Apply Config
+            ball.speed = config.ballSpeed;
+            player.height = config.paddleSize;
+            ai.height = config.paddleSize; // AI gets same paddle size for fairness usually, or keep fixed
+            
+            // Reset Match State
+            player.score = 0;
+            ai.score = 0;
+            resetBall();
+            
+            document.getElementById('level-indicator').innerText = `LEVEL ${config.id} - ${config.name}`;
+            
+            gameState = 'PLAYING';
+            gameLoop();
+        }
+
+        function resetBall() {
+            ball.x = canvas.width / 2;
+            ball.y = canvas.height / 2;
+            // Randomize direction
+            ball.dx = (Math.random() > 0.5 ? 1 : -1) * ball.speed;
+            ball.dy = (Math.random() * 2 - 1) * ball.speed;
+        }
+
+        function update() {
+            // Player Movement
+            player.y = mouseY - (player.height / 2);
+            // Boundary checks
+            if (player.y < 0) player.y = 0;
+            if (player.y + player.height > canvas.height) player.y = canvas.height - player.height;
+
+            // AI Movement
+            let lvlIdx = userProfile.currentLevelIndex >= LEVELS.length ? LEVELS.length - 1 : userProfile.currentLevelIndex;
+            const config = LEVELS[lvlIdx];
+            
+            // Simple AI with error and speed limit
+            let targetY = ball.y - (ai.height / 2);
+            
+            // Add randomness/error to AI based on level
+            if(Math.random() < config.aiError) {
+                targetY += 50; // AI makes a mistake
+            }
+
+            // Lerp for smooth movement
+            if (ai.y < targetY) {
+                ai.y += config.aiSpeed;
+            } else if (ai.y > targetY) {
+                ai.y -= config.aiSpeed;
+            }
+            
+            // AI Boundaries
+            if (ai.y < 0) ai.y = 0;
+            if (ai.y + ai.height > canvas.height) ai.y = canvas.height - ai.height;
+
+            // Ball Physics
+            ball.x += ball.dx;
+            ball.y += ball.dy;
+
+            // Wall Collision (Top/Bottom)
+            if (ball.y - ball.radius < 0 || ball.y + ball.radius > canvas.height) {
+                ball.dy *= -1;
+            }
+
+            // Paddle Collision (Player)
+            if (ball.x - ball.radius < player.x + player.width && 
+                ball.y > player.y && ball.y < player.y + player.height) {
+                
+                // Calculate impact point for angle change
+                let collidePoint = ball.y - (player.y + player.height/2);
+                collidePoint = collidePoint / (player.height/2);
+                
+                let angleRad = (Math.PI/4) * collidePoint;
+                
+                let direction = (ball.x < canvas.width/2) ? 1 : -1;
+                
+                ball.dx = direction * ball.speed * Math.cos(angleRad);
+                ball.dy = ball.speed * Math.sin(angleRad);
+                
+                // Slight speed up on hit
+                ball.speed += 0.2;
+            }
+
+            // Paddle Collision (AI)
+            if (ball.x + ball.radius > ai.x && 
+                ball.y > ai.y && ball.y < ai.y + ai.height) {
+                
+                let collidePoint = ball.y - (ai.y + ai.height/2);
+                collidePoint = collidePoint / (ai.height/2);
+                let angleRad = (Math.PI/4) * collidePoint;
+                
+                let direction = -1; // Send left
+                
+                ball.dx = direction * ball.speed * Math.cos(angleRad);
+                ball.dy = ball.speed * Math.sin(angleRad);
+            }
+
+            // Scoring
+            if (ball.x < 0) {
+                ai.score++;
+                resetBall();
+            } else if (ball.x > canvas.width) {
+                player.score++;
+                resetBall();
+            }
+
+            // Check Win Condition
+            if (player.score >= config.winScore || ai.score >= config.winScore) {
+                endMatch(player.score >= config.winScore);
+            }
+        }
+
+        function endMatch(playerWon) {
+            gameState = 'RESULT';
+            
+            // Update Stats
+            if (playerWon) {
+                userProfile.wins++;
+                userProfile.streak++;
+                if (userProfile.streak > userProfile.bestStreak) userProfile.bestStreak = userProfile.streak;
+                
+                // Advance Level
+                if(userProfile.currentLevelIndex < LEVELS.length) {
+                    userProfile.currentLevelIndex++;
+                }
+
+                document.getElementById('result-title').innerText = "VICTORY";
+                document.getElementById('result-title').style.color = "var(--primary)";
+                document.getElementById('result-msg').innerText = "Level Complete! Data synced.";
+            } else {
+                userProfile.losses++;
+                userProfile.streak = 0;
+                document.getElementById('result-title').innerText = "DEFEAT";
+                document.getElementById('result-title').style.color = "var(--secondary)";
+                document.getElementById('result-msg').innerText = "Try again.";
+            }
+
+            // Record History
+            userProfile.matchHistory.push({
+                timestamp: new Date().toISOString(),
+                level: userProfile.currentLevelIndex,
+                score: `${player.score}-${ai.score}`,
+                result: playerWon ? 'Win' : 'Loss'
+            });
+
+            saveProfile();
+            document.getElementById('result-screen').classList.remove('hidden');
+        }
+
+        function draw() {
+            // Background Clear
+            ctx.fillStyle = 'rgba(13, 17, 23, 0.4)'; // Trails effect
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Center Line
+            ctx.setLineDash([10, 15]);
+            ctx.beginPath();
+            ctx.moveTo(canvas.width / 2, 0);
+            ctx.lineTo(canvas.width / 2, canvas.height);
+            ctx.strokeStyle = '#333';
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Draw Player
+            ctx.fillStyle = '#00ffcc';
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#00ffcc';
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+
+            // Draw AI
+            ctx.fillStyle = '#ff00ff';
+            ctx.shadowColor = '#ff00ff';
+            ctx.fillRect(ai.x, ai.y, ai.width, ai.height);
+
+            // Draw Ball
+            ctx.beginPath();
+            ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff';
+            ctx.shadowColor = '#fff';
+            ctx.fill();
+            ctx.closePath();
+
+            // Reset Shadow for next frame efficiency
+            ctx.shadowBlur = 0;
+
+            // Update DOM UI scores
+            document.getElementById('playerScore').innerText = player.score;
+            document.getElementById('aiScore').innerText = ai.score;
+        }
+
+        function gameLoop() {
+            if (gameState === 'PLAYING') {
+                update();
+                draw();
+                animationId = requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // Initialize
+        loadProfile();
+
+    </script>
+</body>
+</html>
